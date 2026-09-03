@@ -1,0 +1,71 @@
+version: '3.8'
+
+services:
+  ml-service:
+    build:
+      context: .
+      dockerfile: ml/Dockerfile
+    container_name: voiceshield-ml-service
+    ports:
+      - "8000:8000"
+    environment:
+      - PYTHONUNBUFFERED=1
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:8000/docs || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+
+  backend2-service:
+    build:
+      context: .
+      dockerfile: backend2/Dockerfile
+    container_name: voiceshield-backend2-service
+    ports:
+      - "8002:8002"
+    environment:
+      - DETECTION_SERVICE_URL=http://ml-service:8000/detect
+      - PYTHONUNBUFFERED=1
+    depends_on:
+      - ml-service
+    restart: unless-stopped
+
+  blockchain-service:
+    build:
+      context: ./blockchain
+      dockerfile: Dockerfile
+    container_name: voiceshield-blockchain-service
+    ports:
+      - "4000:4000"
+    environment:
+      - PORT=4000
+      - CHAIN_SIGNING_SECRET=dev-only-secret-change-me
+    restart: unless-stopped
+
+  whatsapp-bot:
+    build:
+      context: ./whatsapp-bot
+      dockerfile: Dockerfile
+    container_name: voiceshield-whatsapp-bot
+    ports:
+      - "4001:4001"
+    environment:
+      - PORT=4001
+      - DETECTION_SERVICE_URL=http://ml-service:8000/detect
+    depends_on:
+      - ml-service
+    restart: unless-stopped
+
+  frontend:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: voiceshield-frontend
+    ports:
+      - "5173:5173"
+    environment:
+      - VITE_API_URL=http://localhost:8002
+    depends_on:
+      - backend2-service
+    restart: unless-stopped

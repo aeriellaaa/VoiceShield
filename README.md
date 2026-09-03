@@ -202,7 +202,24 @@ voiceshield/
 
 ---
 
-## Running the Detection Service
+## Running the Services
+
+### Docker Compose (Recommended - All 5 Services)
+
+You can launch all 5 VoiceShield microservices with a single command using Docker Compose:
+
+```bash
+docker compose up --build
+```
+
+This starts:
+- **Frontend App**: `http://localhost:5173`
+- **ML Detection Service**: `http://localhost:8000` (API Docs: `/docs`)
+- **Backend 2 Ingestion Service**: `http://localhost:8002` (API Docs: `/docs`)
+- **Blockchain Audit Ledger**: `http://localhost:4000`
+- **WhatsApp Bot**: `http://localhost:4001`
+
+### Running ML Detection Service Standalone
 
 ```bash
 pip install -r requirements.txt
@@ -222,6 +239,13 @@ Visit `http://localhost:8000/docs` for an interactive API console, or `POST` an 
   "explanation": "Voice matches expected natural speech patterns across all detection branches."
 }
 ```
+
+---
+
+## Contributing
+
+We welcome contributions! Please refer to [CONTRIBUTING.md](file:///c:/VoiceShield/CONTRIBUTING.md) for development setup, code style guidelines, and the pull request workflow.
+
 
 ---
 
