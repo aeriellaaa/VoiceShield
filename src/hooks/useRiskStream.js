@@ -25,7 +25,7 @@ export function useRiskStream() {
       return;
     }
 
-    const ws = new WebSocket(SOCKET_URL);
+    const ws = new WebSocket('ws://127.0.0.1:8000/ws/risk-stream');
 
     wsRef.current = ws;
 
