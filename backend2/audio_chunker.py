@@ -15,7 +15,9 @@ import numpy as np
 SAMPLE_RATE = 16000          # Hz - matches Backend 1's model input
 FRAME_DURATION_MS = 30       # webrtcvad requires 10, 20, or 30ms frames
 BYTES_PER_SAMPLE = 2         # 16-bit PCM
-FRAME_SIZE = int(SAMPLE_RATE * FRAME_DURATION_MS / 1000) * BYTES_PER_SAMPLE
+
+# Fix Issue #28: Ensure float division before int conversion for accurate frame sample count
+FRAME_SIZE = int(SAMPLE_RATE * (float(FRAME_DURATION_MS) / 1000.0)) * BYTES_PER_SAMPLE
 
 WINDOW_SECONDS = 2.0          # length of each scored window (1-4s range in plan)
 SLIDE_MS = 300                # how often we emit a new window (200-500ms range in plan)
@@ -34,9 +36,11 @@ class StreamChunker:
         self.vad = webrtcvad.Vad(VAD_AGGRESSIVENESS)
         self._byte_buffer = bytearray()
         self._pcm_history = collections.deque()   # (bytes frame, is_speech)
-        self._samples_since_last_window = 0
+        self._bytes_since_last_window = 0
         self.window_size_bytes = int(WINDOW_SECONDS * SAMPLE_RATE) * BYTES_PER_SAMPLE
-        self.slide_size_bytes = int(SAMPLE_RATE * (SLIDE_MS / 1000)) * BYTES_PER_SAMPLE
+        
+        # Fix Issue #28: Float arithmetic for accurate slide interval sizing
+        self.slide_size_bytes = int(SAMPLE_RATE * (float(SLIDE_MS) / 1000.0)) * BYTES_PER_SAMPLE
 
     def add_audio(self, pcm_bytes: bytes):
         """Feed raw 16kHz 16-bit mono PCM bytes into the buffer."""
@@ -52,7 +56,7 @@ class StreamChunker:
             except Exception:
                 is_speech = False
             self._pcm_history.append((frame, is_speech))
-            self._samples_since_last_window += FRAME_SIZE
+            self._bytes_since_last_window += FRAME_SIZE
 
     def get_ready_windows(self):
         """
@@ -64,13 +68,13 @@ class StreamChunker:
         total_buffered = sum(len(f) for f, _ in self._pcm_history)
 
         while (total_buffered >= self.window_size_bytes
-               and self._samples_since_last_window >= self.slide_size_bytes):
+               and self._bytes_since_last_window >= self.slide_size_bytes):
             frames = list(self._pcm_history)[-int(self.window_size_bytes / FRAME_SIZE):]
             audio_bytes = b"".join(f for f, _ in frames)
             has_speech = any(is_speech for _, is_speech in frames)
             windows.append((audio_bytes, has_speech))
 
-            self._samples_since_last_window -= self.slide_size_bytes
+            self._bytes_since_last_window -= self.slide_size_bytes
 
             # cap history so memory doesn't grow unbounded on a long call
             max_history_bytes = self.window_size_bytes * 3
