@@ -9,7 +9,7 @@ import asyncio
 import json
 import websockets
 
-WS_URL = "ws://localhost:8002/ws/risk-stream"
+WS_URL = "ws://localhost:8002/ws/risk-stream?token=dev-ws-token-voiceshield"
 
 
 async def main():

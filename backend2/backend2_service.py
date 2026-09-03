@@ -16,7 +16,10 @@ in this file needs to change.
 
 import asyncio
 import hashlib
+import os
+import time
 import wave
+from collections import defaultdict
 from datetime import datetime, timezone
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
@@ -30,6 +33,86 @@ app = FastAPI(title="VoiceShield Backend 2 - Real-Time Pipeline")
 
 DEMO_CALL_ID = "demo-001"
 DEMO_NUMBER = "+91 98765 43210"
+
+WS_AUTH_REQUIRED = os.getenv("WS_AUTH_REQUIRED", "false").lower() == "true"
+WS_AUTH_TOKEN = os.getenv("WS_AUTH_TOKEN", "dev-ws-token-voiceshield")
+ALLOWED_ORIGINS = [
+    o.strip() for o in os.getenv(
+        "ALLOWED_ORIGINS",
+        "http://localhost:5173,http://127.0.0.1:5173,http://localhost:3000,http://127.0.0.1:3000,*"
+    ).split(",") if o.strip()
+]
+
+
+class WSRateLimiter:
+    """Rate limiter for WebSocket connections per client IP."""
+
+    def __init__(self, max_concurrent: int = 10, max_per_minute: int = 20):
+        self.max_concurrent = max_concurrent
+        self.max_per_minute = max_per_minute
+        self.active_connections: dict[str, int] = defaultdict(int)
+        self.connection_history: dict[str, list[float]] = defaultdict(list)
+
+    def is_rate_limited(self, client_ip: str) -> tuple[bool, str]:
+        now = time.time()
+        # Clean up timestamps older than 60 seconds
+        self.connection_history[client_ip] = [
+            t for t in self.connection_history[client_ip] if now - t < 60
+        ]
+
+        if self.active_connections[client_ip] >= self.max_concurrent:
+            return True, f"Max concurrent connections limit ({self.max_concurrent}) reached."
+
+        if len(self.connection_history[client_ip]) >= self.max_per_minute:
+            return True, f"Connection frequency limit ({self.max_per_minute}/min) exceeded."
+
+        return False, ""
+
+    def add_connection(self, client_ip: str):
+        self.active_connections[client_ip] += 1
+        self.connection_history[client_ip].append(time.time())
+
+    def remove_connection(self, client_ip: str):
+        if self.active_connections[client_ip] > 0:
+            self.active_connections[client_ip] -= 1
+
+
+rate_limiter = WSRateLimiter()
+
+
+def verify_ws_auth(websocket: WebSocket) -> bool:
+    """
+    Verifies WebSocket auth token. By default, WS_AUTH_REQUIRED=false for demo safety.
+    """
+    if not WS_AUTH_REQUIRED:
+        return True
+
+    # 1. Check query param: ?token=...
+    token = websocket.query_params.get("token")
+    if token == WS_AUTH_TOKEN:
+        return True
+
+    # 2. Check X-API-Key header
+    api_key = websocket.headers.get("x-api-key")
+    if api_key == WS_AUTH_TOKEN:
+        return True
+
+    # 3. Check Authorization header: Bearer <token>
+    auth_header = websocket.headers.get("authorization", "")
+    if auth_header.startswith("Bearer ") and auth_header[7:].strip() == WS_AUTH_TOKEN:
+        return True
+
+    return False
+
+
+def verify_origin(websocket: WebSocket) -> bool:
+    """Validates the Origin header against ALLOWED_ORIGINS."""
+    if "*" in ALLOWED_ORIGINS:
+        return True
+    origin = websocket.headers.get("origin")
+    if not origin:
+        return True  # Non-browser clients might not set Origin
+    return origin in ALLOWED_ORIGINS
 
 
 def log_decision(decision_obj: dict) -> str:
@@ -63,6 +146,24 @@ def build_decision_object(call_id, number, model_result, challenge_type="none",
 
 @app.websocket("/ws/risk-stream")
 async def risk_stream(websocket: WebSocket):
+    # 1. Authentication check
+    if not verify_ws_auth(websocket):
+        await websocket.close(code=1008, reason="Unauthorized: Invalid or missing token")
+        return
+
+    # 2. Origin check
+    if not verify_origin(websocket):
+        await websocket.close(code=1008, reason="Forbidden: Disallowed Origin")
+        return
+
+    # 3. Rate limiting check
+    client_ip = websocket.client.host if websocket.client else "127.0.0.1"
+    is_limited, reason = rate_limiter.is_rate_limited(client_ip)
+    if is_limited:
+        await websocket.close(code=1008, reason=f"Rate limited: {reason}")
+        return
+
+    rate_limiter.add_connection(client_ip)
     await websocket.accept()
 
     chunker = StreamChunker()
@@ -72,17 +173,41 @@ async def risk_stream(websocket: WebSocket):
     pending_challenge_result = "not_triggered"
 
     try:
-        with wave.open("test_sample.wav", "rb") as wf:
-            sample_rate = wf.getframerate()
-            chunk_frames = int(sample_rate * 0.1)
+        if os.path.exists("test_sample.wav"):
+            with wave.open("test_sample.wav", "rb") as wf:
+                sample_rate = wf.getframerate()
+                chunk_frames = int(sample_rate * 0.1)
 
+                while True:
+                    pcm_chunk = wf.readframes(chunk_frames)
+                    if not pcm_chunk:
+                        wf.rewind()
+                        continue
+
+                    chunker.add_audio(pcm_chunk)
+                    for audio_bytes, has_speech in chunker.get_ready_windows():
+                        wav_bytes = chunker.pcm_to_wav_bytes(audio_bytes)
+                        result = await score_chunk(wav_bytes)
+                        action = router.route(result["decision"], result["fused_score"])
+
+                        if action == Action.CHALLENGE and pending_challenge_type == "none":
+                            challenge = challenges.generate()
+                            pending_challenge_type = challenge.challenge_type
+                            pending_challenge_result = "not_triggered"
+
+                        decision_obj = build_decision_object(
+                            DEMO_CALL_ID, DEMO_NUMBER, result,
+                            challenge_type=pending_challenge_type,
+                            challenge_result=pending_challenge_result,
+                        )
+                        await websocket.send_json(decision_obj)
+                        await asyncio.sleep(0.3)
+        else:
+            # Fallback for presentation when test_sample.wav is not present on disk
+            sample_rate = 16000
+            dummy_pcm = b"\x00\x00" * int(sample_rate * 0.1)
             while True:
-                pcm_chunk = wf.readframes(chunk_frames)
-                if not pcm_chunk:
-                    wf.rewind()
-                    continue  # loop the demo audio so the stream never ends
-
-                chunker.add_audio(pcm_chunk)
+                chunker.add_audio(dummy_pcm)
                 for audio_bytes, has_speech in chunker.get_ready_windows():
                     wav_bytes = chunker.pcm_to_wav_bytes(audio_bytes)
                     result = await score_chunk(wav_bytes)
@@ -99,12 +224,15 @@ async def risk_stream(websocket: WebSocket):
                         challenge_result=pending_challenge_result,
                     )
                     await websocket.send_json(decision_obj)
-                    await asyncio.sleep(0.3)   # matches Frontend's 200-500ms cadence
+                    await asyncio.sleep(0.3)
 
     except WebSocketDisconnect:
         pass
+    finally:
+        rate_limiter.remove_connection(client_ip)
+
 
 
 @app.get("/health")
 async def health():
-    return {"status": "ok", "service": "backend2-realtime-pipeline"}
+    return {"status": "ok", "service": "backend2-realtime-pipeline"}

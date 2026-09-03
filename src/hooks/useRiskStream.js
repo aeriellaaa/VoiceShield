@@ -7,7 +7,9 @@ import {
 } from "../fixtures/decisions";
 
 const USE_MOCK = false;
-const SOCKET_URL = "ws://127.0.0.1:8002/ws/risk-stream";
+const WS_TOKEN = import.meta.env.VITE_WS_TOKEN || "dev-ws-token-voiceshield";
+const SOCKET_URL = `ws://127.0.0.1:8002/ws/risk-stream?token=${WS_TOKEN}`;
+
 
 export function useRiskStream() {
   const [decision, setDecision] = useState(mockDecision);
