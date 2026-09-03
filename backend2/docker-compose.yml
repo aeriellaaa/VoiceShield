@@ -1,0 +1,21 @@
+version: '3.8'
+
+services:
+  fastapi-backend:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    ports:
+      - "8000:8000"
+    environment:
+      - VOICESHIELD_HMAC_SECRET=${VOICESHIELD_HMAC_SECRET:-voiceshield_dev_secret_2026}
+      - AUDIT_LOG_FILE=decision_audit.jsonl
+
+  react-frontend:
+    build:
+      context: .
+      dockerfile: frontend.Dockerfile
+    ports:
+      - "5176:5176"
+    depends_on:
+      - fastapi-backend
