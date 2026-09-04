@@ -13,7 +13,9 @@ function CallScreen({ embedded = false }) {
   const {
     decision,
     status,
-    setDemoScenario
+    setDemoScenario,
+    analyzeUploadedFile,
+    isAnalyzing
   } = useRiskStream();
 
   const [showPanic, setShowPanic] = useState(false);
@@ -164,6 +166,27 @@ function CallScreen({ embedded = false }) {
               Simulate clone
             </button>
           </div>
+        </div>
+
+        {/* Real Audio Upload */}
+        <div className="w-full">
+          <Label className="mb-2">
+            Test with real audio
+          </Label>
+
+          <label className="flex items-center justify-center gap-2 rounded-xl border border-dashed border-hairline px-4 py-3 text-sm text-ink-soft cursor-pointer hover:border-sage-deep transition">
+            {isAnalyzing ? "Analyzing…" : "Upload a voice recording (.wav)"}
+            <input
+              type="file"
+              accept="audio/wav,audio/*"
+              className="hidden"
+              disabled={isAnalyzing}
+              onChange={(e) => {
+                const file = e.target.files?.[0];
+                if (file) analyzeUploadedFile(file);
+              }}
+            />
+          </label>
         </div>
 
         {/* Challenge */}
