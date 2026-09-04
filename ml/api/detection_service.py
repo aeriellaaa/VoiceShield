@@ -24,6 +24,9 @@ CONNECTION_LIMIT = 10
 
 active_connections = 0
 
+DEMO_NUMBER = "+91 98765 43210"
+
+
 @app.websocket("/ws/risk-stream")
 async def websocket_risk_stream(
     websocket: WebSocket,
@@ -31,7 +34,11 @@ async def websocket_risk_stream(
 ):
     global active_connections
 
-    # 1. Token Authentication Check
+    # Must accept() first — closing pre-accept drops the connection
+    # abruptly instead of sending a proper rejection code to the client.
+    await websocket.accept()
+
+    # 1. Token Authentication Check (after accept)
     if token != EXPECTED_API_TOKEN:
         logger.warning(f"Unauthorized WebSocket connection attempt with token: {token}")
         await websocket.close(code=status.WS_1008_POLICY_VIOLATION, reason="Invalid authentication token")
@@ -43,26 +50,26 @@ async def websocket_risk_stream(
         await websocket.close(code=status.WS_1013_TRY_AGAIN_LATER, reason="Connection limit reached")
         return
 
-    await websocket.accept()
     active_connections += 1
     logger.info(f"Client connected. Active connections: {active_connections}")
-    
+
     # Rate limiting trackers per connection
     request_times = []
 
     try:
-        # Initial baseline state emission
+        # Initial baseline state emission — field names must match CallScreen.jsx
         await websocket.send_json({
-            "risk_score": 0.12,
+            "number": DEMO_NUMBER,
+            "fused_score": 0.12,
             "decision": "real",
-            "branch_scores": {"rawnet2": 0.33, "spectrogram": 0.33, "ssl": 0.34}
+            "explanation": "Voice characteristics closely match the verified speaker across waveform, spectrogram, and SSL branches.",
+            "branch_scores": {"rawnet2": 0.10, "spectrogram": 0.14, "ssl": 0.12},
+            "challenge_type": "vocalization"
         })
 
         while True:
-            # Receive audio frame chunks or stream triggers from client
             data = await websocket.receive_text()
 
-            # 3. Simple Sliding-Window Rate Limiting Check
             now = time.time()
             request_times = [t for t in request_times if now - t < 60]
             if len(request_times) >= MAX_REQUESTS_PER_MINUTE:
@@ -73,21 +80,25 @@ async def websocket_risk_stream(
             request_times.append(now)
 
             payload = json.loads(data)
-
-            # Process incoming frame or simulation trigger
             scenario = payload.get("scenario", "safe")
-            
+
             if scenario == "clone":
                 response = {
-                    "risk_score": 0.94,
+                    "number": DEMO_NUMBER,
+                    "fused_score": 0.79,
                     "decision": "suspected_clone",
-                    "branch_scores": {"rawnet2": 0.88, "spectrogram": 0.92, "ssl": 0.96}
+                    "explanation": "Spectrogram branch flagged unnatural harmonic structure in the 2–4kHz band.",
+                    "branch_scores": {"rawnet2": 0.82, "spectrogram": 0.75, "ssl": 0.79},
+                    "challenge_type": "vocalization"
                 }
             else:
                 response = {
-                    "risk_score": 0.08,
+                    "number": DEMO_NUMBER,
+                    "fused_score": 0.12,
                     "decision": "real",
-                    "branch_scores": {"rawnet2": 0.10, "spectrogram": 0.05, "ssl": 0.09}
+                    "explanation": "Voice characteristics closely match the verified speaker across waveform, spectrogram, and SSL branches.",
+                    "branch_scores": {"rawnet2": 0.10, "spectrogram": 0.14, "ssl": 0.12},
+                    "challenge_type": "vocalization"
                 }
 
             await websocket.send_json(response)
@@ -96,7 +107,11 @@ async def websocket_risk_stream(
         logger.info("Client disconnected from risk stream WebSocket")
     except Exception as e:
         logger.exception(f"WebSocket error: {e}")
-        await websocket.close()
     finally:
         active_connections = max(0, active_connections - 1)
         logger.info(f"Connection closed. Active connections remaining: {active_connections}")
+
+
+@app.get("/health")
+async def health():
+    return {"status": "ok"}
